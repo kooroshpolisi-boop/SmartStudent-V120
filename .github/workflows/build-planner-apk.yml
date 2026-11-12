@@ -1,8 +1,11 @@
+
 name: Build Planner Android APK
 
 on:
   push:
-    branches: [main, master]
+    branches:
+      - main
+      - master
     paths:
       - "SmartStudent_V120_GitHub_Upload.zip"
       - ".github/workflows/build-planner-apk.yml"
@@ -11,53 +14,137 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: planner-apk-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
-    runs-on: ubuntu-latest
+    name: Build debug APK
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Extract uploaded project package
+      - name: Verify and extract project package
+        shell: bash
         run: |
-          test -f SmartStudent_V120_GitHub_Upload.zip
-          unzip -o SmartStudent_V120_GitHub_Upload.zip -d .
+          set -euo pipefail
+          test -s SmartStudent_V120_GitHub_Upload.zip
+          unzip -oq SmartStudent_V120_GitHub_Upload.zip -d project
+          test -s project/package.json
+          test -s project/capacitor.config.json
+          test -s project/index.html
+          test -s project/scripts/prepare-web.cjs
+          test -s project/scripts/set-android-labels.sh
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: "22"
 
       - name: Set up Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: 21
+          java-version: "21"
 
-       - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-        with:
-          packages: 'platform-tools;platforms;android-35;build-tools;35.0.0'
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
+
+      - name: Install Android SDK packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+          yes | sdkmanager --licenses >/dev/null 2>&1 || true
+
+      - name: Install Node dependencies
+        working-directory: project
+        run: npm install --no-audit --no-fund
+
+      - name: Prepare web app
+        working-directory: project
+        run: |
+          set -euo pipefail
+          npm run prepare:web
+          test -s www/index.html
+
+      - name: Prepare Planner icon and splash
+        working-directory: project
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y python3-pil
+          python3 - <<'PY'
+          from PIL import Image
+          from pathlib import Path
+
+          assets = Path("assets")
+          source = assets / "icon-512.png"
+
+          if not source.is_file():
+              raise SystemExit("Missing assets/icon-512.png")
+
+          icon = Image.open(source).convert("RGBA")
+          icon = icon.resize((1024, 1024), Image.Resampling.LANCZOS)
+          icon.save(assets / "icon.png")
+
+          splash = Image.new(
+              "RGBA",
+              (2732, 2732),
+              (238, 242, 255, 255)
+          )
+
+          icon.thumbnail((1024, 1024), Image.Resampling.LANCZOS)
+
+          splash.alpha_composite(
+              icon,
+              ((2732 - icon.width) // 2,
+               (2732 - icon.height) // 2)
+          )
+
+          splash.convert("RGB").save(
+              assets / "splash.png",
+              quality=95
+          )
+          PY
 
       - name: Add Android platform
+        working-directory: project
         run: npx cap add android
 
-      - name: Generate app icons
+      - name: Generate Android icons
+        working-directory: project
         run: npx capacitor-assets generate --android
 
       - name: Sync Capacitor
+        working-directory: project
         run: npx cap sync android
 
       - name: Apply localized app names
+        working-directory: project
         run: bash scripts/set-android-labels.sh
 
       - name: Build debug APK
-        working-directory: android
-        run: ./gradlew assembleDebug
+        working-directory: project/android
+        run: |
+          chmod +x ./gradlew
+          ./gradlew assembleDebug --no-daemon --stacktrace
 
-      - name: Upload APK artifact
+      - name: Verify APK
+        working-directory: project
+        run: |
+          test -s android/app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Upload Planner APK
         uses: actions/upload-artifact@v4
         with:
           name: Planner-APK
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          path: project/android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
+          retention-days: 14
+          
