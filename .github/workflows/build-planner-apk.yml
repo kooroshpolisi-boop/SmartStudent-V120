@@ -34,14 +34,10 @@ jobs:
           distribution: temurin
           java-version: 21
 
-      - name: Set up Android SDK
+       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
-
-      - name: Install project dependencies
-        run: npm install
-
-      - name: Prepare web app
-        run: npm run prepare:web
+        with:
+          packages: 'platform-tools;platforms;android-35;build-tools;35.0.0'
 
       - name: Add Android platform
         run: npx cap add android
